@@ -1,16 +1,47 @@
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual environments
 .venv/
-.env
-staticfiles/
+venv/
+env/
+
+# Django
 *.sqlite3
+staticfiles/
+media/
+local_settings.py
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# Testing / linting / type-checking
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
 
-# editor / OS
+# Editor / OS
 .vscode/
 .idea/
 .DS_Store
+Thumbs.db
 
-# local dev tooling state, not part of the project
+# Local dev tooling state, not part of the project
 .claude/worktrees/
