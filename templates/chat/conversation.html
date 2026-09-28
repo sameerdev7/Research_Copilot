@@ -1,0 +1,24 @@
+{% extends "base/base.html" %}
+{% block title %}Chat — {{ workspace.name }}{% endblock %}
+{% block content %}
+<h1 class="text-xl font-semibold mb-1">{{ workspace.name }} · Chat</h1>
+<div class="flex gap-4 text-sm mb-6">
+    <a href="{% url 'workspace-detail' workspace.pk %}" class="text-slate-500 hover:underline">&larr; workspace</a>
+    <a href="{% url 'paper-list' workspace.pk %}" class="text-slate-500 hover:underline">&larr; papers</a>
+</div>
+
+<div id="message-list" class="mb-6">
+    {% include "chat/_messages.html" %}
+</div>
+
+<form hx-post="{% url 'chat-message' workspace.pk %}"
+      hx-target="#message-list"
+      hx-swap="beforeend"
+      hx-on::after-request="this.reset()"
+      class="flex gap-2">
+    {% csrf_token %}
+    <input type="text" name="question" placeholder="Ask a question about the ingested papers..."
+           class="border rounded px-3 py-2 text-sm flex-1" required>
+    <button type="submit" class="bg-slate-900 text-white px-4 py-2 rounded text-sm">Ask</button>
+</form>
+{% endblock %}

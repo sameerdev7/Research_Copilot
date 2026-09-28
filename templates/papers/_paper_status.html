@@ -1,0 +1,21 @@
+<div id="paper-status"
+     {% if has_pending %}hx-get="{% url 'paper-status' workspace.pk %}" hx-trigger="every 3s" hx-swap="outerHTML"{% endif %}>
+    <ul class="space-y-2">
+        {% for paper in papers %}
+            <li class="border rounded px-4 py-3 flex items-center justify-between">
+                <div>
+                    <div class="font-medium">{{ paper.title }}</div>
+                    <div class="text-slate-500 text-sm">{{ paper.authors|join:", " }} · {{ paper.arxiv_id }}</div>
+                </div>
+                <span class="text-xs px-2 py-1 rounded
+                    {% if paper.status == 'ready' %}bg-emerald-100 text-emerald-800
+                    {% elif paper.status == 'failed' %}bg-red-100 text-red-800
+                    {% else %}bg-amber-100 text-amber-800{% endif %}">
+                    {{ paper.status }}
+                </span>
+            </li>
+        {% empty %}
+            <li class="text-slate-500 text-sm">No papers ingested yet.</li>
+        {% endfor %}
+    </ul>
+</div>

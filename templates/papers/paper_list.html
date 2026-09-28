@@ -1,0 +1,24 @@
+{% extends "base/base.html" %}
+{% block title %}Papers — {{ workspace.name }}{% endblock %}
+{% block content %}
+<h1 class="text-xl font-semibold mb-1">{{ workspace.name }} · Papers</h1>
+<div class="flex gap-4 text-sm mb-6">
+    <a href="{% url 'workspace-detail' workspace.pk %}" class="text-slate-500 hover:underline">&larr; workspace</a>
+    <a href="{% url 'chat-conversation' workspace.pk %}" class="text-slate-500 hover:underline">chat &rarr;</a>
+</div>
+
+<form hx-post="{% url 'paper-search' workspace.pk %}"
+      hx-target="#search-results"
+      hx-swap="innerHTML"
+      class="flex gap-2 mb-6">
+    {% csrf_token %}
+    <input type="text" name="query" placeholder="Topic (e.g. 'retrieval augmented generation') or arXiv ID"
+           class="border rounded px-3 py-2 text-sm flex-1">
+    <button type="submit" class="bg-slate-900 text-white px-4 py-2 rounded text-sm">Search arXiv</button>
+</form>
+
+<div id="search-results" class="mb-8"></div>
+
+<h2 class="font-medium mb-3">Ingested papers</h2>
+{% include "papers/_paper_status.html" %}
+{% endblock %}
