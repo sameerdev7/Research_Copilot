@@ -6,8 +6,9 @@
 uv run pytest -q
 ```
 
-20 tests, no live API keys or network access required (`papers/tests/test_arxiv_client.py`
-mocks `requests.get`; everything LLM-related uses `FakeLLMClient`). Needs a running
+100 backend tests (plus 8 frontend tests with `npm test`, and a Playwright smoke test via `make e2e`), no live API keys or network access required (`papers/tests/test_arxiv_client.py`
+mocks `requests.get`; everything LLM-related uses `FakeLLMClient`, and a root `conftest.py` blanks the API keys
+for every test so nothing can reach a real provider by accident). Needs a running
 Postgres with the `vector` extension available — `pytest-django` creates and migrates a
 throwaway `test_<POSTGRES_DB>` database against whatever `POSTGRES_HOST`/`POSTGRES_PORT`
 are in `.env`, and the `VectorExtension()` migration operation enables `vector` in that
@@ -27,16 +28,18 @@ papers/tests/
   test_arxiv_client.py   # arXiv API wrapper, mocked HTTP
   test_pdf_extract.py    # PDF text extraction, including the NUL-byte regression
   test_tasks.py          # the Celery ingestion task, mocked download + real embedding
-  test_views.py          # search/ingest views, mocked arxiv_client + Celery .delay()
   fixtures/
     arxiv_response.xml    # a saved Atom API response
     sample.pdf             # a minimal hand-built PDF with known text content
 agent/tests/
-  test_query_graph.py    # the critique/retry cycle, FakeLLMClient, no DB access
-chat/tests/
-  test_views.py          # chat view: quota, LLM-failure degradation, message creation
-workspaces/tests/
-  test_views.py          # workspace CRUD + cross-user 403 isolation
+  test_query_graph.py    # critique/retry cycle, rewrite, stage events, FakeLLMClient
+  test_retrieval.py      # RRF + per-paper cap (pure), hybrid search against real pgvector/FTS
+  test_fallback_client.py
+api/tests/
+  test_auth_and_workspaces.py  # login/register, cross-user 404 isolation
+  test_papers.py               # search/ingest/retry, broker-outage handling
+  test_chat.py                 # NDJSON stream, history, quota, diagnosed failures, disconnects
+  test_diagnostics_and_health.py
 ```
 
 Each layer is tested at the boundary that makes sense for it, deliberately not
@@ -48,11 +51,15 @@ end-to-end for every case:
   (see below), never in CI.
 - **The critique/retry cycle is tested as a real compiled LangGraph graph**, not by
   manually chaining function calls — see the "why a graph, not a chain" note below.
-- **Django views are tested with `Client()`**, asserting on database state and
+- **API views are tested with DRF's `APIClient`**, asserting on database state and
   response content, with the one real dependency they have on other layers (Celery,
   the query graph, arXiv) mocked out — those layers have their own tests.
 
 ## The query graph tests, in detail
+
+(The streaming/stage tests and the rewrite tests in the same file run the *full* graph
+with `hybrid_search` stubbed; the retrieval tests in `test_retrieval.py` cover the real
+SQL, with `embed_text` patched to return hand-built vectors so no model loads.)
 
 `agent/tests/test_query_graph.py` builds a *second*, smaller compiled graph that
 starts at `synthesize` instead of `retrieve`:
@@ -133,8 +140,11 @@ fake = FakeLLMClient(responses=[
 result = run_query(workspace_id=1, question="What architecture does the Transformer use?", llm=fake)
 ```
 
-With a real `GROQ_API_KEY`/`GEMINI_API_KEY` in `.env`, drop the `llm=fake` argument to
-exercise the real adapters end-to-end through the chat UI.
+For a full browser pass without spending tokens, start Django with `LLM_PROVIDER=demo`
+(and ideally a scratch `POSTGRES_DB`): the demo client answers from the top retrieved
+chunk, so the loader, citations, history and error cards can all be exercised. With real
+`GROQ_API_KEY`/`GEMINI_API_KEY` in `.env` and `LLM_PROVIDER=auto`, the same flow
+exercises the real adapters.
 
 ## What caught real bugs (and what didn't)
 
@@ -143,8 +153,8 @@ were all found by driving the actual browser against a running dev server + Cele
 worker + Postgres — not by the unit suite, which was green the whole time. Two lessons
 baked into the current tests as a result:
 
-- `papers/tests/test_views.py::test_ingesting_only_the_checked_candidate_does_not_mix_up_metadata`
-  exists specifically because the *first* version of `test_ingest_papers_creates_paper_and_enqueues_celery_task`
+- `api/tests/test_papers.py::test_ingest_stores_refetched_metadata_and_enqueues`
+  descends from a test that exists specifically because the *first* version of the ingest test
   only ever submitted a single candidate, which can't expose a positional-mismatch bug
   between multiple candidates — a reminder that a Django `Client()` test with only one
   of something in the form data doesn't exercise the same code path as the real

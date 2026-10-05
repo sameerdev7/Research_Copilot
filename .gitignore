@@ -45,3 +45,8 @@ Thumbs.db
 
 # Local dev tooling state, not part of the project
 .claude/worktrees/
+
+# Frontend
+node_modules/
+frontend/test-results/
+frontend/playwright-report/

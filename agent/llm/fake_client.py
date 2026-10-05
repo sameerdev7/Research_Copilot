@@ -1,6 +1,5 @@
+# returns scripted responses in order (tests only)
 class FakeLLMClient:
-    """Returns pre-scripted text responses in order, ignoring input. For tests only."""
-
     def __init__(self, responses: list[str]):
         self._responses = list(responses)
         self._index = 0

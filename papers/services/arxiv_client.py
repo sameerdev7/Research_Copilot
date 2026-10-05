@@ -1,8 +1,3 @@
-"""Thin wrapper around arXiv's free, keyless Atom API.
-
-https://export.arxiv.org/api_help/
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -68,8 +63,8 @@ def _query(params: dict) -> list[ArxivPaper]:
     return [_parse_entry(entry) for entry in root.findall("atom:entry", ATOM_NS)]
 
 
+# search arXiv by topic
 def search(query: str, max_results: int = 10) -> list[dict]:
-    """Search arXiv by free-text topic query. Returns candidate paper metadata."""
     papers = _query(
         {
             "search_query": f"all:{query}",
@@ -82,8 +77,8 @@ def search(query: str, max_results: int = 10) -> list[dict]:
     return [p.as_dict() for p in papers]
 
 
+# fetch metadata for explicit arXiv ids
 def get_by_ids(arxiv_ids: list[str]) -> list[dict]:
-    """Fetch metadata for explicit arXiv IDs (e.g. ['2401.01234', '2201.00001v2'])."""
     if not arxiv_ids:
         return []
     papers = _query({"id_list": ",".join(arxiv_ids), "max_results": len(arxiv_ids)})

@@ -11,8 +11,20 @@ class QuotaExceeded(Exception):
     pass
 
 
+# add the estimated tokens a finished answer used
+def record_tokens(user, tokens: int) -> None:
+    UsageRecord.objects.filter(user=user, date=date.today()).update(tokens_used=F("tokens_used") + tokens)
+
+
+# give back a counted request after a failure that wasn't the user's fault
+def refund(user) -> None:
+    UsageRecord.objects.filter(user=user, date=date.today(), requests_made__gt=0).update(
+        requests_made=F("requests_made") - 1
+    )
+
+
+# raise QuotaExceeded when today's quota is used up, else count the request
 def check_and_increment(user, tokens_used: int = 0) -> UsageRecord:
-    """Raise QuotaExceeded if today's question quota is already used up, else record the request."""
     today = date.today()
     with transaction.atomic():
         record, _ = UsageRecord.objects.select_for_update().get_or_create(user=user, date=today)

@@ -1,5 +1,8 @@
 from django.conf import settings
+from django.contrib.postgres.indexes import GinIndex
+from django.contrib.postgres.search import SearchVector
 from django.db import models
+from django.utils import timezone
 from pgvector.django import HnswIndex, VectorField
 
 from workspaces.models import Workspace
@@ -21,6 +24,8 @@ class Paper(models.Model):
     status = models.CharField(max_length=16, choices=STATUS_CHOICES, default="pending")
     failure_reason = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    # when ingestion was last queued; the stuck-paper sweep measures from here
+    queued_at = models.DateTimeField(default=timezone.now)
 
     class Meta:
         ordering = ["-created_at"]
@@ -49,6 +54,7 @@ class Chunk(models.Model):
                 ef_construction=64,
                 opclasses=["vector_cosine_ops"],
             ),
+            GinIndex(SearchVector("text", config="english"), name="chunk_text_fts"),
         ]
 
     def __str__(self):

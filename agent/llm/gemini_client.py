@@ -2,11 +2,13 @@ import re
 import time
 
 from google import genai
+from google.genai import types
 from google.genai.errors import ClientError
 
-DEFAULT_MODEL = "gemini-2.0-flash"
+DEFAULT_MODEL = "gemini-3.8-flash"
 MAX_RETRIES = 3
 DEFAULT_BACKOFF_SECONDS = 20
+REQUEST_TIMEOUT_MS = 60_000
 
 
 def _to_gemini_contents(messages: list[dict]) -> tuple[str | None, list[dict]]:
@@ -34,7 +36,7 @@ def _is_rate_limited(exc: ClientError) -> bool:
 
 class GeminiClient:
     def __init__(self, model: str = DEFAULT_MODEL, api_key: str | None = None):
-        self._client = genai.Client(api_key=api_key)
+        self._client = genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=REQUEST_TIMEOUT_MS))
         self._model_name = model
 
     def complete(self, messages: list[dict]) -> str:

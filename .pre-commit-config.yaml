@@ -1,0 +1,13 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.9.10
+    hooks:
+      - id: ruff
+  - repo: local
+    hooks:
+      - id: frontend-typecheck
+        name: frontend typecheck
+        entry: npm --prefix frontend run typecheck
+        language: system
+        pass_filenames: false
+        files: ^frontend/

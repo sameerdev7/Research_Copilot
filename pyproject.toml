@@ -19,8 +19,9 @@ dependencies = [
     "python-dotenv>=1.0",
     "groq>=0.11",
     "google-genai>=1.0",
-    "django-htmx>=1.19",
     "gunicorn>=23.0",
+    "whitenoise>=6.12.0",
+    "sentry-sdk>=2.71.0",
 ]
 
 [dependency-groups]
@@ -32,7 +33,13 @@ dev = [
 
 [tool.ruff]
 line-length = 100
+extend-exclude = ["*/migrations/*"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+ignore = ["E501"]
 
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "config.settings"
 python_files = ["test_*.py", "*_test.py", "tests.py"]
+filterwarnings = ["ignore:No directory at"]

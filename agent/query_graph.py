@@ -1,69 +1,92 @@
-"""The self-correcting RAG loop: retrieve -> synthesize -> critique -> (retry synthesize | done).
-
-This is the one real LangGraph cycle in the project: critique_node can route back to
-synthesize_node with concrete unsupported-claim notes, up to max_retries times.
-"""
-
 from __future__ import annotations
 
+import logging
 import re
+import time
+from collections.abc import Iterator
 
 from django.conf import settings
 from langgraph.graph import END, StateGraph
-from pgvector.django import CosineDistance
 
-from .embeddings import embed_text
 from .llm.base import LLMClient
+from .llm.counting_client import CountingClient
 from .llm.factory import get_default_client
-from .prompts import build_critique_messages, build_synthesize_messages
-from .state import Citation, QueryState, RetrievedChunk
+from .prompts import build_critique_messages, build_rewrite_messages, build_synthesize_messages
+from .retrieval import hybrid_search
+from .state import Citation, QueryState, RetrievedChunk, Turn
 
-CITATION_LINE_RE = re.compile(r"^(.*?)\s*\[(\d+)\]\s*$")
+logger = logging.getLogger(__name__)
+
+NO_RESULTS_ANSWER = "I couldn't find anything relevant to that in this workspace's papers."
+MAX_SEARCH_QUERY_CHARS = 500
+
+# a line's trailing citation tags, e.g. "text. [3][4]"
+CITATION_LINE_RE = re.compile(r"^(.*?)\s*((?:\[\d+\]\s*)+)$")
 UNSUPPORTED_RE = re.compile(r"UNSUPPORTED:\s*(.*)", re.IGNORECASE)
 
 
-def retrieve_node(state: QueryState) -> dict:
-    from papers.models import Chunk  # avoid a hard Django-apps-not-ready import at module load
+def _match_citation_line(line: str) -> tuple[str, list[int]] | None:
+    match = CITATION_LINE_RE.match(line.strip())
+    if not match:
+        return None
+    sentence, tags_blob = match.group(1), match.group(2)
+    return sentence, [int(n) for n in re.findall(r"\d+", tags_blob)]
 
-    question_vector = embed_text(state["question"])
-    rows = (
-        Chunk.objects.filter(paper__workspace_id=state["workspace_id"], paper__status="ready")
-        .select_related("paper")
-        .annotate(distance=CosineDistance("embedding", question_vector))
-        .order_by("distance")[: settings.RAG_RETRIEVAL_K]
-    )
-    retrieved: list[RetrievedChunk] = [
-        {
-            "paper_id": c.paper_id,
-            "chunk_id": c.id,
-            "paper_title": c.paper.title,
-            "text": c.text,
-            "score": 1 - c.distance,
+
+# turns a follow-up question into a standalone search query
+def rewrite_node(state: QueryState, llm: LLMClient | None = None) -> dict:
+    history = state.get("history") or []
+    question = state["question"]
+    if not history:
+        return {"search_query": question}
+
+    llm = llm or get_default_client()
+    try:
+        rewritten = llm.complete(build_rewrite_messages(question, history)).strip()
+    except Exception:  # noqa: BLE001 - retrieval can still work with the raw question
+        logger.warning("query rewrite failed, searching with the raw question", exc_info=True)
+        return {"search_query": question}
+
+    first_line = rewritten.splitlines()[0].strip() if rewritten else ""
+    if not first_line or len(first_line) > MAX_SEARCH_QUERY_CHARS:
+        return {"search_query": question}
+    return {"search_query": first_line}
+
+
+def retrieve_node(state: QueryState) -> dict:
+    query = state.get("search_query") or state["question"]
+    retrieved = hybrid_search(state["workspace_id"], query)
+    if not retrieved:
+        return {
+            "retrieved_chunks": [],
+            "draft_answer": NO_RESULTS_ANSWER,
+            "finished": True,
         }
-        for c in rows
-    ]
     return {"retrieved_chunks": retrieved}
 
 
 def _parse_draft(raw: str, retrieved_chunks: list[RetrievedChunk]) -> tuple[str, list[Citation]]:
     citations: list[Citation] = []
     for line in raw.strip().splitlines():
-        match = CITATION_LINE_RE.match(line.strip())
-        if not match:
+        parsed = _match_citation_line(line)
+        if parsed is None:
             continue
-        sentence, chunk_num = match.group(1), int(match.group(2))
-        if 1 <= chunk_num <= len(retrieved_chunks):
-            chunk = retrieved_chunks[chunk_num - 1]
-            citations.append(
-                {"paper_id": chunk["paper_id"], "chunk_id": chunk["chunk_id"], "quoted_text": sentence}
-            )
-    return raw.strip(), citations
+        sentence, chunk_nums = parsed
+        for chunk_num in chunk_nums:
+            if 1 <= chunk_num <= len(retrieved_chunks):
+                chunk = retrieved_chunks[chunk_num - 1]
+                citations.append(
+                    {"paper_id": chunk["paper_id"], "chunk_id": chunk["chunk_id"], "quoted_text": sentence}
+                )
+    return "\n".join(line.strip() for line in raw.strip().splitlines() if line.strip()), citations
 
 
 def synthesize_node(state: QueryState, llm: LLMClient | None = None) -> dict:
     llm = llm or get_default_client()
     critique_notes = state.get("critique_notes") if state.get("retries", 0) > 0 else None
-    messages = build_synthesize_messages(state["question"], state["retrieved_chunks"], critique_notes)
+    messages = build_synthesize_messages(
+        state["question"], state["retrieved_chunks"], critique_notes, state.get("history")
+    )
     raw = llm.complete(messages)
     draft_answer, citations = _parse_draft(raw, state["retrieved_chunks"])
     return {"draft_answer": draft_answer, "citations": citations}
@@ -88,13 +111,18 @@ def critique_node(state: QueryState, llm: LLMClient | None = None) -> dict:
     notes: list[str] = []
     checkable: dict[int, str] = {}
     for i, line in enumerate(lines, start=1):
-        match = CITATION_LINE_RE.match(line.strip())
-        if not match:
+        if not line.strip():
+            continue
+        parsed = _match_citation_line(line)
+        if parsed is None:
             notes.append(f'Line {i} has no citation tag: "{line.strip()}"')
             continue
-        sentence, chunk_num = match.group(1), int(match.group(2))
-        if not (1 <= chunk_num <= len(retrieved_chunks)):
-            notes.append(f'Line {i} cites chunk [{chunk_num}], which was not retrieved: "{sentence}"')
+        sentence, chunk_nums = parsed
+        out_of_range = [n for n in chunk_nums if not (1 <= n <= len(retrieved_chunks))]
+        if out_of_range:
+            notes.append(
+                f'Line {i} cites chunk(s) {out_of_range}, which were not retrieved: "{sentence}"'
+            )
             continue
         checkable[i] = sentence
 
@@ -117,25 +145,58 @@ def _route_after_critique(state: QueryState) -> str:
     return "synthesize" if not state["finished"] else END
 
 
+def _route_after_retrieve(state: QueryState) -> str:
+    return END if state["finished"] else "synthesize"
+
+
 def build_query_graph(llm: LLMClient | None = None):
     graph = StateGraph(QueryState)
+    graph.add_node("rewrite", lambda s: rewrite_node(s, llm=llm))
     graph.add_node("retrieve", retrieve_node)
     graph.add_node("synthesize", lambda s: synthesize_node(s, llm=llm))
     graph.add_node("critique", lambda s: critique_node(s, llm=llm))
 
-    graph.set_entry_point("retrieve")
-    graph.add_edge("retrieve", "synthesize")
+    graph.set_entry_point("rewrite")
+    graph.add_edge("rewrite", "retrieve")
+    graph.add_conditional_edges(
+        "retrieve", _route_after_retrieve, {"synthesize": "synthesize", END: END}
+    )
     graph.add_edge("synthesize", "critique")
     graph.add_conditional_edges("critique", _route_after_critique, {"synthesize": "synthesize", END: END})
 
     return graph.compile()
 
 
-def run_query(workspace_id: int, question: str, llm: LLMClient | None = None) -> QueryState:
-    graph = build_query_graph(llm=llm)
+def _next_stage(node: str, state: dict) -> str | None:
+    if node == "rewrite":
+        return "retrieve"
+    if node == "retrieve":
+        return None if state["finished"] else "synthesize"
+    if node == "synthesize":
+        return "critique"
+    return None if state["finished"] else "synthesize"
+
+
+# a graph node raised; stage says which one
+class QueryFailed(Exception):
+    def __init__(self, stage: str, cause: Exception):
+        self.stage = stage
+        self.cause = cause
+        super().__init__(f"{stage} failed: {cause}")
+
+
+# yields ("stage", ...) as nodes start, then ("done", state)
+def stream_query(
+    workspace_id: int,
+    question: str,
+    history: list[Turn] | None = None,
+    llm: LLMClient | None = None,
+) -> Iterator[tuple[str, dict]]:
     initial_state: QueryState = {
         "workspace_id": workspace_id,
         "question": question,
+        "history": history or [],
+        "search_query": question,
         "retrieved_chunks": [],
         "draft_answer": None,
         "citations": [],
@@ -143,5 +204,42 @@ def run_query(workspace_id: int, question: str, llm: LLMClient | None = None) ->
         "retries": 0,
         "max_retries": settings.RAG_MAX_RETRIES,
         "finished": False,
+        "timings": {},
+        "tokens_used": 0,
     }
-    return graph.invoke(initial_state)
+    state: dict = dict(initial_state)
+    stage = "rewrite" if history else "retrieve"
+    yield "stage", {"stage": stage, "attempt": 1}
+
+    counter = CountingClient(lambda: llm or get_default_client())
+    started = time.monotonic()
+    try:
+        for update in build_query_graph(llm=counter).stream(initial_state, stream_mode="updates"):
+            for node, node_update in update.items():
+                state.update(node_update)
+                now = time.monotonic()
+                state["timings"][node] = round(state["timings"].get(node, 0.0) + now - started, 3)
+                started = now
+
+                next_stage = _next_stage(node, state)
+                if next_stage and next_stage != stage:
+                    stage = next_stage
+                    yield "stage", {"stage": stage, "attempt": state["retries"] + 1}
+    except Exception as exc:  # noqa: BLE001 - re-raised with the stage attached for diagnosis
+        raise QueryFailed(stage, exc) from exc
+
+    state["tokens_used"] = counter.estimated_tokens
+    yield "done", state
+
+
+def run_query(
+    workspace_id: int,
+    question: str,
+    history: list[Turn] | None = None,
+    llm: LLMClient | None = None,
+) -> QueryState:
+    state = {}
+    for event, payload in stream_query(workspace_id, question, history, llm):
+        if event == "done":
+            state = payload
+    return state  # type: ignore[return-value]
