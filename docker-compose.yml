@@ -64,7 +64,7 @@ services:
   worker:
     build: .
     # -B runs the scheduler for the stuck-paper sweep inside this single worker
-    command: celery -A config worker -B --loglevel=info
+    command: celery -A config worker -B --concurrency=2 --loglevel=info
     env_file: .env
     environment:
       POSTGRES_HOST: postgres

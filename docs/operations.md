@@ -71,4 +71,6 @@ Every failure shows a code and a reference id. Search the server log for the ref
 | `throttled` | Too many requests | Wait the stated number of seconds |
 | `internal_error` | Unexpected bug | Find the reference id in the log; it has the traceback |
 
+The worker runs 2 processes (`--concurrency=2`) and loads the embedding model once before forking. Add `--concurrency=2` to a locally started worker too, or Celery starts one process per CPU.
+
 Papers stuck in "Processing" are failed automatically after 30 minutes (the worker runs a sweep every 10 minutes); use the retry button on the paper afterwards. Provider failures and internal errors do not count against a user's daily quota.

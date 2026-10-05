@@ -183,8 +183,12 @@ LOGGING = {
         }
     },
     "loggers": {
-        name: {"handlers": ["console"], "level": "INFO", "propagate": False}
-        for name in ("agent", "api", "papers", "chat", "django.request")
+        **{
+            name: {"handlers": ["console"], "level": "INFO", "propagate": False}
+            for name in ("agent", "api", "papers", "chat", "django.request")
+        },
+        # one INFO line per HTTP request to Hugging Face is just noise
+        **{name: {"level": "WARNING"} for name in ("httpx", "httpcore", "huggingface_hub")},
     },
 }
 
